@@ -1,0 +1,98 @@
+---
+title: "Format GreenGenes2 Database"
+author: "Scott A. Handley"
+date: "2024-06-25"
+output: html_document
+---
+## Purpose
+There is an updated version of GreenGenes (GreenGenes2): https://www.nature.com/articles/s41587-023-01845-1. These data need to be properly formatted to be used as a dada2 refernece database.
+
+The code below was updated from: https://github.com/benjjneb/dada2/issues/1680#issuecomment-1736469044
+
+```{r initiate-env-load-data}
+# Load required packages
+library(tidyverse)
+library(Biostrings)
+
+# Download current database files
+# Can always check to see if there is a newer version
+# This was current on 25-June, 2024
+
+download.file(
+  "http://ftp.microbio.me/greengenes_release/current/2022.10.backbone.full-length.fna.qza",
+  "2022.10.backbone.full-length.fna.qza"
+)
+download.file(
+  "http://ftp.microbio.me/greengenes_release/current/2022.10.backbone.tax.qza",
+  "2022.10.backbone.tax.qza"
+)
+
+unzip("2022.10.backbone.full-length.fna.qza")
+unzip("2022.10.backbone.tax.qza")
+
+```
+
+```{r }
+
+tax <-
+  read_tsv("c16a953c-f24d-4d14-927c-40d90ced395e/data/taxonomy.tsv") %>%
+  separate_wider_delim(
+    Taxon,
+    delim = "; ",
+    names = c("Domain", "Phylum", "Class", "Order", "Family", "Genus", "Species"
+    )
+  ) 
+  
+# format columns for assignTaxonomy and assignSpecies
+formated_tax <- tax %>% 
+  mutate(
+    # replace unassigned Species with NA
+    Species = str_replace(Species, "^s__$", NA_character_),
+    # get rid of genus name in species column
+    Species = str_replace_all(Species, "^.* ", "s__"),
+    # construct dada2 appropriate headers, ignoring unassigned Species
+    assignSpecies = case_when(!is.na(Species) ~ str_c(`Feature ID`, Genus, Species, sep = " "))
+  ) %>%
+  # prepare headers for assignTaxonomy
+  unite("assignTaxonomy",
+        -c(`Feature ID`, assignSpecies),
+        sep = ";",
+        na.rm = TRUE) %>%
+  mutate(
+    # add trailing semicolon
+    assignTaxonomy = str_c(assignTaxonomy, ";"),
+    # remove all unclassified ranks and their lower variants
+    assignTaxonomy = str_remove(assignTaxonomy, "[pcofg]__;.*")
+    )
+
+
+fna_train <-
+  readDNAStringSet("a53d9300-5c5c-4774-a2e8-a5e23904f1ae/data/dna-sequences.fasta")
+
+# prepare version for assignSpecies
+fna_species <- fna_train
+
+#map new headers to sequence names
+fna_tax <- tibble(`Feature ID` = names(fna_train)) %>%
+  left_join(formated_tax)
+
+# rename
+names(fna_train) <- fna_tax$assignTaxonomy
+names(fna_species) <- fna_tax$assignSpecies
+# get rid of the unassigned Species names
+fna_species <- fna_species[!is.na(names(fna_species))]
+
+fna_train %>%
+  writeXStringSet("2022.10.backbone.full-length.dada2.train.fna.gz",
+                  compress = TRUE)
+fna_species %>%
+  writeXStringSet("2022.10.backbone.full-length.dada2.species.fna.gz",
+                  compress = TRUE)
+
+# test taxonomy
+dada2:::tax.check(
+  "2022.10.backbone.full-length.dada2.train.fna.gz",
+  fn.test = system.file("extdata", "ten_16s.100.fa.gz", package = "dada2")
+)
+
+```
